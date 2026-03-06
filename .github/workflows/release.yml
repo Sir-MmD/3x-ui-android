@@ -26,7 +26,7 @@ jobs:
       - name: Get Xray latest version
         id: xray
         run: |
-          XRAY_VERSION=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+          XRAY_VERSION=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.tag_name')
           echo "version=$XRAY_VERSION" >> "$GITHUB_OUTPUT"
           echo "Xray version: $XRAY_VERSION"
 
