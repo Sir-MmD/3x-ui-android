@@ -70,7 +70,6 @@ func initDefaultBackend() logging.Backend {
 	} else {
 		// Unix-like: Try syslog, fallback to stderr
 		if syslogBackend, err := logging.NewSyslogBackend(""); err != nil {
-			fmt.Fprintf(os.Stderr, "syslog backend disabled: %v\n", err)
 			backend = logging.NewLogBackend(os.Stderr, "", 0)
 			includeTime = os.Getppid() > 0
 		} else {

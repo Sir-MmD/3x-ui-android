@@ -115,6 +115,10 @@ type ServerService struct {
 	cpuHistory         []CPUSample
 	cachedCpuSpeedMhz  float64
 	lastCpuInfoAttempt time.Time
+
+	// Log-once flags to avoid spamming warnings in restricted environments
+	warnedCPU  bool
+	warnedSwap bool
 }
 
 // AggregateCpuHistory returns up to maxPoints averaged buckets of size bucketSeconds over recent data.
@@ -234,7 +238,10 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	// CPU stats
 	util, err := s.sampleCPUUtilization()
 	if err != nil {
-		logger.Warning("get cpu percent failed:", err)
+		if !s.warnedCPU {
+			logger.Warning("get cpu percent failed:", err)
+			s.warnedCPU = true
+		}
 	} else {
 		status.Cpu = util
 	}
@@ -291,14 +298,25 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 
 	swapInfo, err := mem.SwapMemory()
 	if err != nil {
-		logger.Warning("get swap memory failed:", err)
+		// Fallback: read swap from /proc/meminfo (works on Android)
+		swapUsed, swapTotal, err2 := sys.SwapMemoryFromMeminfo()
+		if err2 != nil {
+			if !s.warnedSwap {
+				logger.Warning("get swap memory failed:", err)
+				s.warnedSwap = true
+			}
+		} else {
+			status.Swap.Current = swapUsed
+			status.Swap.Total = swapTotal
+		}
 	} else {
 		status.Swap.Current = swapInfo.Used
 		status.Swap.Total = swapInfo.Total
 	}
 
-	// Disk stats
-	diskInfo, err := disk.Usage("/")
+	// Disk stats — use the app's data directory so we report the correct
+	// partition (on Android "/" is a small system ramdisk, not user storage).
+	diskInfo, err := disk.Usage(config.GetDBFolderPath())
 	if err != nil {
 		logger.Warning("get disk usage failed:", err)
 	} else {
@@ -316,9 +334,20 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 
 	// Network stats
 	ioStats, err := net.IOCounters(false)
-	if err != nil {
-		logger.Warning("get io counters failed:", err)
-	} else if len(ioStats) > 0 {
+	if err != nil || len(ioStats) == 0 {
+		// Fallback: read from /proc/self/net/dev or netlink (works on Android)
+		sent, recv, err2 := sys.NetIOCountersFallback()
+		if err2 == nil {
+			status.NetTraffic.Sent = sent
+			status.NetTraffic.Recv = recv
+			if lastStatus != nil {
+				duration := now.Sub(lastStatus.T)
+				seconds := float64(duration) / float64(time.Second)
+				status.NetIO.Up = uint64(float64(status.NetTraffic.Sent-lastStatus.NetTraffic.Sent) / seconds)
+				status.NetIO.Down = uint64(float64(status.NetTraffic.Recv-lastStatus.NetTraffic.Recv) / seconds)
+			}
+		}
+	} else {
 		ioStat := ioStats[0]
 		status.NetTraffic.Sent = ioStat.BytesSent
 		status.NetTraffic.Recv = ioStat.BytesRecv
@@ -331,20 +360,11 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 			status.NetIO.Up = up
 			status.NetIO.Down = down
 		}
-	} else {
-		logger.Warning("can not find io counters")
 	}
 
 	// TCP/UDP connections
-	status.TcpCount, err = sys.GetTCPCount()
-	if err != nil {
-		logger.Warning("get tcp connections failed:", err)
-	}
-
-	status.UdpCount, err = sys.GetUDPCount()
-	if err != nil {
-		logger.Warning("get udp connections failed:", err)
-	}
+	status.TcpCount, _ = sys.GetTCPCount()
+	status.UdpCount, _ = sys.GetUDPCount()
 
 	// IP fetching with caching
 	showIp4ServiceLists := []string{
@@ -433,16 +453,15 @@ func (s *ServerService) AppendCpuSample(t time.Time, v float64) {
 }
 
 func (s *ServerService) sampleCPUUtilization() (float64, error) {
-	// Try native platform-specific CPU implementation first (Windows, Linux, macOS)
-	if pct, err := sys.CPUPercentRaw(); err == nil {
+	// Try native platform-specific CPU implementation first
+	pct, err := sys.CPUPercentRaw()
+	if err == nil {
 		s.mu.Lock()
-		// First call to native method returns 0 (initializes baseline)
 		if !s.hasNativeCPUSample {
 			s.hasNativeCPUSample = true
 			s.mu.Unlock()
 			return 0, nil
 		}
-		// Smooth with EMA
 		const alpha = 0.3
 		if s.emaCPU == 0 {
 			s.emaCPU = pct
@@ -453,68 +472,29 @@ func (s *ServerService) sampleCPUUtilization() (float64, error) {
 		s.mu.Unlock()
 		return val, nil
 	}
-	// If native call fails, fall back to gopsutil times
-	// Read aggregate CPU times (all CPUs combined)
-	times, err := cpu.Times(false)
-	if err != nil {
-		return 0, err
-	}
-	if len(times) == 0 {
-		return 0, fmt.Errorf("no cpu times available")
-	}
 
-	cur := times[0]
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// If this is the first sample, initialize and return current EMA (0 by default)
-	if !s.hasLastCPUSample {
-		s.lastCPUTimes = cur
-		s.hasLastCPUSample = true
-		return s.emaCPU, nil
-	}
-
-	// Compute busy and total deltas
-	// Note: Guest and GuestNice times are already included in User and Nice respectively,
-	// so we exclude them to avoid double-counting (Linux kernel accounting)
-	idleDelta := cur.Idle - s.lastCPUTimes.Idle
-	busyDelta := (cur.User - s.lastCPUTimes.User) +
-		(cur.System - s.lastCPUTimes.System) +
-		(cur.Nice - s.lastCPUTimes.Nice) +
-		(cur.Iowait - s.lastCPUTimes.Iowait) +
-		(cur.Irq - s.lastCPUTimes.Irq) +
-		(cur.Softirq - s.lastCPUTimes.Softirq) +
-		(cur.Steal - s.lastCPUTimes.Steal)
-
-	totalDelta := busyDelta + idleDelta
-
-	// Update last sample for next time
-	s.lastCPUTimes = cur
-
-	// Guard against division by zero or negative deltas (e.g., counter resets)
-	if totalDelta <= 0 {
-		return s.emaCPU, nil
+	// /proc/stat failed — try cpuidle sysfs (works on Android without /proc/stat)
+	pct, err = sys.CPUPercentFromCpuidle()
+	if err == nil {
+		s.mu.Lock()
+		if !s.hasNativeCPUSample {
+			s.hasNativeCPUSample = true
+			s.mu.Unlock()
+			return 0, nil
+		}
+		const alpha = 0.3
+		if s.emaCPU == 0 {
+			s.emaCPU = pct
+		} else {
+			s.emaCPU = alpha*pct + (1-alpha)*s.emaCPU
+		}
+		val := s.emaCPU
+		s.mu.Unlock()
+		return val, nil
 	}
 
-	raw := 100.0 * (busyDelta / totalDelta)
-	if raw < 0 {
-		raw = 0
-	}
-	if raw > 100 {
-		raw = 100
-	}
-
-	// Exponential moving average to smooth spikes
-	const alpha = 0.3 // smoothing factor (0<alpha<=1). Higher = more responsive, lower = smoother
-	if s.emaCPU == 0 {
-		// Initialize EMA with the first real reading to avoid long warm-up from zero
-		s.emaCPU = raw
-	} else {
-		s.emaCPU = alpha*raw + (1-alpha)*s.emaCPU
-	}
-
-	return s.emaCPU, nil
+	// All methods failed
+	return 0, err
 }
 
 func (s *ServerService) GetXrayVersions() ([]string, error) {

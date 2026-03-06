@@ -1,57 +1,139 @@
-[English](/README.md) | [فارسی](/README.fa_IR.md) | [العربية](/README.ar_EG.md) |  [中文](/README.zh_CN.md) | [Español](/README.es_ES.md) | [Русский](/README.ru_RU.md)
+# 3x-ui Android (Termux)
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./media/3x-ui-dark.png">
-    <img alt="3x-ui" src="./media/3x-ui-light.png">
-  </picture>
-</p>
+A fork of [3x-ui](https://github.com/MHSanaei/3x-ui) modified to run on Android without root, inside Termux or any terminal emulator app.
 
-[![Release](https://img.shields.io/github/v/release/mhsanaei/3x-ui.svg)](https://github.com/MHSanaei/3x-ui/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/mhsanaei/3x-ui/release.yml.svg)](https://github.com/MHSanaei/3x-ui/actions)
-[![GO Version](https://img.shields.io/github/go-mod/go-version/mhsanaei/3x-ui.svg)](#)
-[![Downloads](https://img.shields.io/github/downloads/mhsanaei/3x-ui/total.svg)](https://github.com/MHSanaei/3x-ui/releases/latest)
-[![License](https://img.shields.io/badge/license-GPL%20V3-blue.svg?longCache=true)](https://www.gnu.org/licenses/gpl-3.0.en.html)
-[![Go Reference](https://pkg.go.dev/badge/github.com/mhsanaei/3x-ui/v2.svg)](https://pkg.go.dev/github.com/mhsanaei/3x-ui/v2)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mhsanaei/3x-ui/v2)](https://goreportcard.com/report/github.com/mhsanaei/3x-ui/v2)
+Based on upstream v2.8.11.
 
-**3X-UI** — advanced, open-source web-based control panel designed for managing Xray-core server. It offers a user-friendly interface for configuring and monitoring various VPN and proxy protocols.
+## Changes from upstream
 
-> [!IMPORTANT]
-> This project is only for personal usage, please do not use it for illegal purposes, and please do not use it in a production environment.
+- **Pure-Go SQLite driver** (`github.com/glebarez/sqlite` instead of `gorm.io/driver/sqlite`) — eliminates CGO dependency, enables fully static cross-compilation
+- **Portable default paths** — database, logs, and Xray binary all default to the directory next to the executable (no `/etc/x-ui` or `/var/log/x-ui`)
+- **Static ARM64 binary** — no shared libraries, no runtime dependencies
+- **Android system monitoring fallbacks** — CPU, swap, disk, network stats all work without root:
+  - CPU utilization via cpuidle sysfs (Android blocks `/proc/stat` for unprivileged apps)
+  - Swap info from `/proc/meminfo` (Android blocks `/proc/vmstat`)
+  - Network IO from `/proc/self/net/dev` with netlink RTM_GETLINK fallback
+  - TCP/UDP connection counts via `/proc/self/net/` with netlink SOCK_DIAG fallback
+  - Disk usage from the app's data directory (Android's `/` is a tiny ramdisk)
+- **No syslog dependency** — silently falls back to stderr on Android
+- **Warn-once logging** — expected Android permission failures logged once instead of every 2 seconds
 
-As an enhanced fork of the original X-UI project, 3X-UI provides improved stability, broader protocol support, and additional features.
+## Setup
 
-## Quick Start
+### 1. Get the binaries
+
+Download pre-built `xa` and `xray-linux-arm64` from releases, or build from source (see below).
+
+### 2. Install
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+# Create directory structure
+mkdir -p ~/x-ui/bin ~/x-ui/log
+
+# Copy binaries
+cp xa ~/x-ui/xa
+cp xray-linux-arm64 ~/x-ui/bin/
+chmod +x ~/x-ui/xa ~/x-ui/bin/xray-linux-arm64
+
+# Download geo databases (required by Xray)
+curl -Lo ~/x-ui/bin/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+curl -Lo ~/x-ui/bin/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
 ```
 
-For full documentation, please visit the [project Wiki](https://github.com/MHSanaei/3x-ui/wiki).
+### 3. Run
 
-## A Special Thanks to
+```bash
+cd ~/x-ui && ./xa run
+```
 
-- [alireza0](https://github.com/alireza0/)
+The database (`x-ui.db`), logs (`log/`), and Xray binary (`bin/`) are all resolved relative to the executable. No environment variables needed.
 
-## Acknowledgment
+The panel starts on `http://localhost:2053` by default.
+Default login: `admin` / `admin`.
 
-- [Iran v2ray rules](https://github.com/chocolate4u/Iran-v2ray-rules) (License: **GPL-3.0**): _Enhanced v2ray/xray and v2ray/xray-clients routing rules with built-in Iranian domains and a focus on security and adblocking._
-- [Russia v2ray rules](https://github.com/runetfreedom/russia-v2ray-rules-dat) (License: **GPL-3.0**): _This repository contains automatically updated V2Ray routing rules based on data on blocked domains and addresses in Russia._
+## Directory layout
 
-## Support project
+```
+~/x-ui/
+  xa                          # panel binary
+  x-ui.db                     # database (created on first run)
+  bin/
+    xray-linux-arm64           # Xray core binary
+    geoip.dat                  # geo database
+    geosite.dat                # geo database
+    config.json                # Xray config (generated by panel)
+  log/
+    3xui.log                   # panel log
+    3xipl.log                  # IP limit log
+```
 
-**If this project is helpful to you, you may wish to give it a**:star2:
+## What works
 
-<a href="https://www.buymeacoffee.com/MHSanaei" target="_blank">
-<img src="./media/default-yellow.png" alt="Buy Me A Coffee" style="height: 70px !important;width: 277px !important;" >
-</a>
+| Feature | Status |
+|---------|--------|
+| Web panel (Gin) | Works |
+| Xray core management (start/stop/restart) | Works |
+| All proxy protocols (VLESS, VMess, Trojan, Shadowsocks, etc.) | Works |
+| Inbound/client management | Works |
+| Traffic monitoring and statistics | Works |
+| Subscription server | Works |
+| Telegram bot integration | Works |
+| Multi-user / client management | Works |
+| Database backup/restore | Works |
+| TLS / certificate configuration | Works (manual cert path) |
+| `sendThrough` (bind outbound to specific IP) | Works |
+| WebSocket, gRPC, HTTP/2, TCP, QUIC transports | Works |
+| Routing rules | Works |
+| DNS configuration | Works |
+| Scheduled jobs (traffic reset, expiry, etc.) | Works |
+| File-based logging | Works |
+| CPU / memory / swap / disk / network stats | Works (via Android-compatible fallbacks) |
+| LDAP authentication | Works |
 
-</br>
-<a href="https://nowpayments.io/donation/hsanaei" target="_blank" rel="noreferrer noopener">
-   <img src="./media/donation-button-black.svg" alt="Crypto donation button by NOWPayments">
-</a>
+## What does NOT work
 
-## Stargazers over Time
+| Feature | Reason |
+|---------|--------|
+| TUN inbound | Requires CAP_NET_ADMIN (root) |
+| TPROXY / redirect inbound | Requires CAP_NET_ADMIN (root) |
+| `interface` socket option (bind to interface by name) | Requires CAP_NET_ADMIN — use `sendThrough` with the interface IP instead |
+| `SO_MARK` (fwmark) | Requires CAP_NET_ADMIN |
+| IP limit via fail2ban | fail2ban not available in Termux |
+| Syslog / journalctl log viewer | No systemd in Termux — use file logs instead |
+| ACME / Let's Encrypt (port 80) | Port 80 requires root — use manual certificates |
+| L2TP/IPsec | Requires kernel modules + iptables + root |
+| Install scripts (`install.sh`, `x-ui.sh`) | Designed for full Linux distros with systemd |
 
-[![Stargazers over time](https://starchart.cc/MHSanaei/3x-ui.svg?variant=adaptive)](https://starchart.cc/MHSanaei/3x-ui)
+## Build from source
+
+Requirements: Go 1.22+ on any platform (no C compiler needed).
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-s -w' -o xa .
+```
+
+Produces a fully static binary with zero runtime dependencies.
+
+## Environment variables
+
+All paths default to relative to the executable, but can be overridden:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `XUI_DB_FOLDER` | `<executable dir>` | Database directory |
+| `XUI_LOG_FOLDER` | `<executable dir>/log` | Log file directory |
+| `XUI_BIN_FOLDER` | `<executable dir>/bin` | Xray binary + geo data directory |
+| `XUI_DEBUG` | `false` | Enable debug logging |
+| `XUI_LOG_LEVEL` | `info` | Log level (debug/info/notice/warning/error) |
+
+## Notes
+
+- Use ports >= 1024 (non-privileged). The defaults (2053 panel, 2096 sub) are fine.
+- To bind outbound connections to a specific network interface, use `sendThrough` with the interface's IP address (e.g. `"sendThrough": "192.168.1.50"`) instead of the `interface` socket option.
+- The Xray binary must be named `xray-linux-arm64` in the bin folder.
+- Works in Termux, Termux:Boot (for auto-start), or any Android terminal emulator that allows executing binaries from its private storage.
+- `/sdcard/` is mounted `noexec` on Android — do not place binaries there.
+
+## License
+
+GPL v3 — same as upstream 3x-ui.

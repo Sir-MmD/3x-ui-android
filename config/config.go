@@ -5,10 +5,8 @@ package config
 import (
 	_ "embed"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -57,11 +55,11 @@ func IsDebug() bool {
 	return os.Getenv("XUI_DEBUG") == "true"
 }
 
-// GetBinFolderPath returns the path to the binary folder, defaulting to "bin" if not set via XUI_BIN_FOLDER.
+// GetBinFolderPath returns the path to the binary folder, defaulting to "bin" next to the executable.
 func GetBinFolderPath() string {
 	binFolderPath := os.Getenv("XUI_BIN_FOLDER")
 	if binFolderPath == "" {
-		binFolderPath = "bin"
+		binFolderPath = filepath.Join(getBaseDir(), "bin")
 	}
 	return binFolderPath
 }
@@ -89,10 +87,7 @@ func GetDBFolderPath() string {
 	if dbFolderPath != "" {
 		return dbFolderPath
 	}
-	if runtime.GOOS == "windows" {
-		return getBaseDir()
-	}
-	return "/etc/x-ui"
+	return getBaseDir()
 }
 
 // GetDBPath returns the full path to the database file.
@@ -106,51 +101,6 @@ func GetLogFolder() string {
 	if logFolderPath != "" {
 		return logFolderPath
 	}
-	if runtime.GOOS == "windows" {
-		return filepath.Join(".", "log")
-	}
-	return "/var/log/x-ui"
+	return filepath.Join(getBaseDir(), "log")
 }
 
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	if err != nil {
-		return err
-	}
-
-	return out.Sync()
-}
-
-func init() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	if os.Getenv("XUI_DB_FOLDER") != "" {
-		return
-	}
-	oldDBFolder := "/etc/x-ui"
-	oldDBPath := fmt.Sprintf("%s/%s.db", oldDBFolder, GetName())
-	newDBFolder := GetDBFolderPath()
-	newDBPath := fmt.Sprintf("%s/%s.db", newDBFolder, GetName())
-	_, err := os.Stat(newDBPath)
-	if err == nil {
-		return // new exists
-	}
-	_, err = os.Stat(oldDBPath)
-	if os.IsNotExist(err) {
-		return // old does not exist
-	}
-	_ = copyFile(oldDBPath, newDBPath) // ignore error
-}
